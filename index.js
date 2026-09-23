@@ -1,6 +1,6 @@
 const TOKENS = process.env.BOT_TOKENS.split(',').map(t => t.trim());
 const GUILD_ID = process.env.GUILD_ID;
-const INTERVAL_MS = 800;
+const INTERVAL_MS = 2000; // raised from 600 — safe for multiple bots
 const MESSAGES = ['🔔', 'ping!', 'notif', '💥', 'wake up', '📣'];
 const API = 'https://discord.com/api/v10';
 
@@ -13,6 +13,16 @@ async function discordFetch(token, path, options = {}) {
       ...options.headers,
     },
   });
+
+  // rate limited — wait the time Discord tells us, then retry once
+  if (res.status === 429) {
+    const data = await res.json();
+    const retryAfter = (data.retry_after || 1) * 1000;
+    console.warn(`Rate limited, retrying after ${retryAfter}ms`);
+    await new Promise(r => setTimeout(r, retryAfter));
+    return discordFetch(token, path, options);
+  }
+
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`${res.status} ${res.statusText}: ${body}`);
@@ -49,8 +59,14 @@ async function getOrCreateChannel(token, botIndex) {
 
 async function runBot(token, index) {
   try {
+    // stagger bot startups so they don't all hammer the API at once
+    await new Promise(r => setTimeout(r, index * 500));
+
     const channel = await getOrCreateChannel(token, index);
     console.log(`[Bot ${index}] ready, posting to ${channel.name}`);
+
+    // stagger each bot's interval so they don't all fire at the same millisecond
+    await new Promise(r => setTimeout(r, index * (INTERVAL_MS / TOKENS.length)));
 
     setInterval(async () => {
       const msg = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
