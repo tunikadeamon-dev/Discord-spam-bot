@@ -4,6 +4,7 @@ const TOKENS = process.env.BOT_TOKENS.split(',').map(t => t.trim());
 const GUILD_ID = process.env.GUILD_ID;
 const INTERVAL_MS = 1200;
 const MESSAGES = ['🔔', 'ping!', 'notif', '💥', 'wake up', '📣'];
+const USER_ID = process.env.USER_ID;
 
 async function createNewChannel(guild) {
   let category = guild.channels.cache.find(c => c.name === 'SPAM ZONE' && c.type === ChannelType.GuildCategory);
@@ -35,8 +36,8 @@ async function runBot(token, index) {
 
     setInterval(() => {
       const msg = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
-      channel.send(msg).catch(err => console.error(`[Bot ${index}] send failed:`, err.message));
-    }, INTERVAL_MS);
+      channel.send(`<@${USER_ID}> ${msg}`).catch(err => console.error(`[Bot ${index}] send failed:`, err.message));
+}, INTERVAL_MS);
   });
 
   client.login(token).catch(err => console.error(`[Bot ${index}] login failed:`, err.message));
