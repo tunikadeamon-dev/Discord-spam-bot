@@ -1,25 +1,43 @@
-const { Client, GatewayIntentBits, ChannelType } = require('discord.js');
-
 const TOKENS = process.env.BOT_TOKENS.split(',').map(t => t.trim());
 const GUILD_ID = process.env.GUILD_ID;
 const INTERVAL_MS = 600;
 const MESSAGES = ['🔔', 'ping!', 'notif', '💥', 'wake up', '📣'];
-const USER_IDS = process.env.USER_IDS.split(',').map(id => id.trim());
+const API = 'https://discord.com/api/v10';
 
-async function getOrCreateChannel(guild, botIndex) {
-  let category = guild.channels.cache.find(c => c.name === 'SPAM ZONE' && c.type === ChannelType.GuildCategory);
+async function discordFetch(token, path, options = {}) {
+  const res = await fetch(`${API}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bot ${token}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+async function getOrCreateChannel(token, botIndex) {
+  const channels = await discordFetch(token, `/guilds/${GUILD_ID}/channels`);
+
+  let category = channels.find(c => c.type === 4 && c.name === 'SPAM ZONE');
   if (!category) {
-    category = await guild.channels.create({ name: 'SPAM ZONE', type: ChannelType.GuildCategory });
+    category = await discordFetch(token, `/guilds/${GUILD_ID}/channels`, {
+      method: 'POST',
+      body: JSON.stringify({ name: 'SPAM ZONE', type: 4 }),
+    });
   }
 
   const channelName = `spam-${botIndex + 1}`;
-  let channel = guild.channels.cache.find(c => c.name === channelName && c.type === ChannelType.GuildText);
+  let channel = channels.find(c => c.type === 0 && c.name === channelName);
 
   if (!channel) {
-    channel = await guild.channels.create({
-      name: channelName,
-      type: ChannelType.GuildText,
-      parent: category.id,
+    channel = await discordFetch(token, `/guilds/${GUILD_ID}/channels`, {
+      method: 'POST',
+      body: JSON.stringify({ name: channelName, type: 0, parent_id: category.id }),
     });
     console.log(`Created channel: ${channelName}`);
   } else {
@@ -30,21 +48,27 @@ async function getOrCreateChannel(guild, botIndex) {
 }
 
 async function runBot(token, index) {
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
+  try {
+    const channel = await getOrCreateChannel(token, index);
+    console.log(`[Bot ${index}] ready, posting to ${channel.name}`);
 
-  client.once('ready', async () => {
-    console.log(`[Bot ${index}] Logged in as ${client.user.tag}`);
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const channel = await getOrCreateChannel(guild, index);
-
-    setInterval(() => {
+    setInterval(async () => {
       const msg = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
-      const mentions = USER_IDS.map(id => `<@${id}>`).join(' ');
-      channel.send(`${mentions} ${msg}`).catch(err => console.error(`[Bot ${index}] send failed:`, err.message));
+      try {
+        await discordFetch(token, `/channels/${channel.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({
+            content: `@everyone ${msg}`,
+            allowed_mentions: { parse: ['everyone'] },
+          }),
+        });
+      } catch (err) {
+        console.error(`[Bot ${index}] send failed:`, err.message);
+      }
     }, INTERVAL_MS);
-  });
-
-  client.login(token).catch(err => console.error(`[Bot ${index}] login failed:`, err.message));
+  } catch (err) {
+    console.error(`[Bot ${index}] setup failed:`, err.message);
+  }
 }
 
 TOKENS.forEach((token, i) => runBot(token, i));
