@@ -1,6 +1,6 @@
 const TOKENS = process.env.BOT_TOKENS.split(',').map(t => t.trim());
 const GUILD_ID = process.env.GUILD_ID;
-const INTERVAL_MS = 2000; // raised from 600 — safe for multiple bots
+const INTERVAL_MS = 2000;
 const MESSAGES = ['🔔', 'ping!', 'notif', '💥', 'wake up', '📣'];
 const API = 'https://discord.com/api/v10';
 
@@ -14,7 +14,6 @@ async function discordFetch(token, path, options = {}) {
     },
   });
 
-  // rate limited — wait the time Discord tells us, then retry once
   if (res.status === 429) {
     const data = await res.json();
     const retryAfter = (data.retry_after || 1) * 1000;
@@ -30,61 +29,70 @@ async function discordFetch(token, path, options = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-async function getOrCreateChannel(token, botIndex) {
-  const channels = await discordFetch(token, `/guilds/${GUILD_ID}/channels`);
+async function setupChannels() {
+  // use first token only for all setup
+  const token = TOKENS[0];
+  const existing = await discordFetch(token, `/guilds/${GUILD_ID}/channels`);
 
-  let category = channels.find(c => c.type === 4 && c.name === 'SPAM ZONE');
+  // get or create category
+  let category = existing.find(c => c.type === 4 && c.name === 'SPAM ZONE');
   if (!category) {
     category = await discordFetch(token, `/guilds/${GUILD_ID}/channels`, {
       method: 'POST',
       body: JSON.stringify({ name: 'SPAM ZONE', type: 4 }),
     });
+    console.log('Created category: SPAM ZONE');
   }
 
-  const channelName = `spam-${botIndex + 1}`;
-  let channel = channels.find(c => c.type === 0 && c.name === channelName);
-
-  if (!channel) {
-    channel = await discordFetch(token, `/guilds/${GUILD_ID}/channels`, {
+  // create all missing channels in parallel
+  const channelIds = await Promise.all(TOKENS.map(async (_, i) => {
+    const name = `spam-${i + 1}`;
+    const found = existing.find(c => c.type === 0 && c.name === name);
+    if (found) {
+      console.log(`Reusing channel: ${name}`);
+      return found.id;
+    }
+    const created = await discordFetch(token, `/guilds/${GUILD_ID}/channels`, {
       method: 'POST',
-      body: JSON.stringify({ name: channelName, type: 0, parent_id: category.id }),
+      body: JSON.stringify({ name, type: 0, parent_id: category.id }),
     });
-    console.log(`Created channel: ${channelName}`);
-  } else {
-    console.log(`Reusing existing channel: ${channelName}`);
-  }
+    console.log(`Created channel: ${name}`);
+    return created.id;
+  }));
 
-  return channel;
+  return channelIds;
 }
 
-async function runBot(token, index) {
+async function sendMessage(token, channelId, index) {
+  const msg = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
   try {
-    // stagger bot startups so they don't all hammer the API at once
-    await new Promise(r => setTimeout(r, index * 500));
-
-    const channel = await getOrCreateChannel(token, index);
-    console.log(`[Bot ${index}] ready, posting to ${channel.name}`);
-
-    // stagger each bot's interval so they don't all fire at the same millisecond
-    await new Promise(r => setTimeout(r, index * (INTERVAL_MS / TOKENS.length)));
-
-    setInterval(async () => {
-      const msg = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
-      try {
-        await discordFetch(token, `/channels/${channel.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({
-            content: `@everyone ${msg}`,
-            allowed_mentions: { parse: ['everyone'] },
-          }),
-        });
-      } catch (err) {
-        console.error(`[Bot ${index}] send failed:`, err.message);
-      }
-    }, INTERVAL_MS);
+    await discordFetch(token, `/channels/${channelId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: `@everyone ${msg}`,
+        allowed_mentions: { parse: ['everyone'] },
+      }),
+    });
   } catch (err) {
-    console.error(`[Bot ${index}] setup failed:`, err.message);
+    console.error(`[Bot ${index}] send failed:`, err.message);
   }
 }
 
-TOKENS.forEach((token, i) => runBot(token, i));
+async function main() {
+  console.log('Setting up channels...');
+  const channelIds = await setupChannels();
+  console.log('All channels ready, starting bots...');
+
+  // start all bots at once, each with a small offset so they don't fire simultaneously
+  TOKENS.forEach((token, i) => {
+    setTimeout(() => {
+      console.log(`[Bot ${i}] started`);
+      setInterval(() => sendMessage(token, channelIds[i], i), INTERVAL_MS);
+    }, i * (INTERVAL_MS / TOKENS.length));
+  });
+}
+
+main().catch(err => {
+  console.error('Fatal startup error:', err.message);
+  process.exit(1);
+});
