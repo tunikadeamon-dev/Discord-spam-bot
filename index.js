@@ -1,6 +1,6 @@
 const TOKENS = process.env.BOT_TOKENS.split(',').map(t => t.trim());
 const GUILD_ID = process.env.GUILD_ID;
-const INTERVAL_MS = 600;
+const INTERVAL_MS = 800;
 const MESSAGES = ['🔔', 'ping!', 'notif', '💥', 'wake up', '📣'];
 const API = 'https://discord.com/api/v10';
 
