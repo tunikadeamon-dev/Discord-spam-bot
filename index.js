@@ -4,29 +4,47 @@ const INTERVAL_MS = 1000;
 const MESSAGES = ['🔔', 'ping!', 'notif', '💥', 'wake up', '📣'];
 const API = 'https://discord.com/api/v10';
 
-async function discordFetch(token, path, options = {}) {
-  const res = await fetch(`${API}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bot ${token}`,
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
+async function discordFetch(token, path, options = {}, retries = 5) {
+  try {
+    const res = await fetch(`${API}${path}`, {
+      ...options,
+      headers: {
+        Authorization: `Bot ${token}`,
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
 
-  if (res.status === 429) {
-    const data = await res.json();
-    const retryAfter = (data.retry_after || 1) * 1000;
-    console.warn(`[rate limit] retrying after ${retryAfter}ms`);
-    await new Promise(r => setTimeout(r, retryAfter));
-    return discordFetch(token, path, options);
-  }
+    if (res.status === 429) {
+      const data = await res.json();
+      const retryAfter = (data.retry_after || 1) * 1000;
+      console.warn(`[rate limit] retrying after ${retryAfter}ms`);
+      await new Promise(r => setTimeout(r, retryAfter));
+      return discordFetch(token, path, options, retries);
+    }
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    if (res.status === 503 && retries > 0) {
+      console.warn(`[503] retrying in 5s (${retries} left)`);
+      await new Promise(r => setTimeout(r, 5000));
+      return discordFetch(token, path, options, retries - 1);
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    }
+
+    return res.status === 204 ? null : res.json();
+
+  } catch (err) {
+    // catches network-level errors (connection reset, no such file, etc.)
+    if (retries > 0) {
+      console.warn(`[network error] ${err.message} — retrying in 5s (${retries} left)`);
+      await new Promise(r => setTimeout(r, 5000));
+      return discordFetch(token, path, options, retries - 1);
+    }
+    throw err;
   }
-  return res.status === 204 ? null : res.json();
 }
 
 async function setupChannels() {
@@ -60,8 +78,6 @@ async function setupChannels() {
   return channelIds;
 }
 
-// self-scheduling loop — each send waits for the last to finish
-// so rate limit retries never stack up or block other bots
 async function spamLoop(token, channelId, index) {
   const msg = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
   try {
@@ -73,9 +89,8 @@ async function spamLoop(token, channelId, index) {
       }),
     });
   } catch (err) {
-    console.error(`[Bot ${index}] send failed:`, err.message);
+    console.error(`[Bot ${index}] send failed permanently:`, err.message);
   }
-  // schedule next send only after this one fully resolves
   setTimeout(() => spamLoop(token, channelId, index), INTERVAL_MS);
 }
 
@@ -84,7 +99,6 @@ async function main() {
   const channelIds = await setupChannels();
   console.log('All channels ready, starting bots...');
 
-  // start each bot with a small offset so they don't all fire at once
   TOKENS.forEach((token, i) => {
     setTimeout(() => {
       console.log(`[Bot ${i}] started`);
